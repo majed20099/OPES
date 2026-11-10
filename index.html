@@ -546,6 +546,8 @@ function viewOperationDetail(id){
 
     ${phasesSection(o)}
 
+    ${graphsSection(o)}
+
     ${liveProtos.length?`<div class="slabel">Live Protocols</div>
       ${liveProtos.map(a=>`<div class="panel" style="padding:12px 14px;margin-bottom:9px;border-color:${a.color}55">
         <div style="display:flex;align-items:center;gap:9px">
@@ -644,6 +646,258 @@ function reopenPhase(opId,phId){const o=getOp(opId);const ph=o.phases.find(p=>p.
 function delPhase(opId,phId){const o=getOp(opId);const ph=(o.phases||[]).find(p=>p.id===phId);
   o.phases=o.phases.filter(p=>p.id!==phId);logSys(o,"edit",{text:"Phase “"+(ph?ph.name:"")+"” removed"});save();closeModal();toast("Phase removed");go("operation",opId);}
 
+/* ============================================================
+   GRAPHS — custom per-operation graphs, stored in op.graphs
+   (additive: older data without op.graphs loads unchanged)
+   graph = {id,name,xMode:"time"|"manual",xLabel,yLabel,color,createdAt,
+            points:[{id,ts,x?,y,note}]}
+   ============================================================ */
+const GRAPH_COLORS=["#34e0c8","#5b8def","#a78bfa","#f5a623","#ff5d5d"];
+function niceTicks(a,b,n){
+  const span=(b-a)||1,raw=span/n,mag=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/mag;
+  const step=(f<1.5?1:f<3?2:f<7?5:10)*mag;
+  const s=Math.floor(a/step+1e-9)*step,e=Math.ceil(b/step-1e-9)*step,t=[];
+  for(let v=s;v<=e+step/2;v+=step)t.push(+v.toFixed(10));
+  return t;
+}
+function fmtNum(v){const a=Math.abs(v);
+  if(a>=1e6)return +(v/1e6).toFixed(1)+"M";
+  if(a>=1e4)return +(v/1e3).toFixed(1)+"k";
+  return String(+v.toFixed(2));}
+function fmtXTime(t,span){return span<172800000?fmtTime(t):dmon(t)+" "+dnum(t);}
+function isNum(v){return String(v==null?"":v).trim()!==""&&isFinite(Number(v));}
+
+const graphSel={};
+function findGraph(gid){for(const o of DB.operations){const g=(o.graphs||[]).find(x=>x.id===gid);if(g)return g;}return null;}
+/* display points: sorted along X; yMode "cumulative" turns entries into a running total */
+function graphPts(g){
+  let pts=(g.points||[]).map(p=>({...p}));
+  const time=g.xMode==="time";let cat=false;
+  if(time){pts.forEach(p=>p._x=new Date(p.ts).getTime());pts.sort((a,b)=>a._x-b._x);}
+  else{cat=pts.some(p=>!isNum(p.x));
+    if(cat)pts.forEach((p,i)=>p._x=i);
+    else{pts.forEach(p=>p._x=Number(p.x));pts.sort((a,b)=>a._x-b._x);}}
+  let run=0;pts.forEach(p=>{p._raw=p.y;if(g.yMode==="cumulative"){run+=p.y;p._y=run;}else p._y=p.y;});
+  return{pts,time,cat};
+}
+function graphGeom(g){
+  const{pts,time,cat}=graphPts(g);
+  const W=360,H=200,L=40,R=14,T=12,B=28,pw=W-L-R,ph=H-T-B;
+  let x0=Math.min(...pts.map(p=>p._x)),x1=Math.max(...pts.map(p=>p._x)),xt=[];
+  if(cat){x0=0;x1=Math.max(1,pts.length-1);}
+  else{
+    if(x0===x1){const pad=time?1800000:1;x0-=pad;x1+=pad;}
+    if(time)xt=[0,1,2,3].map(i=>x0+(x1-x0)*i/3);
+    else{xt=niceTicks(x0,x1,4);x0=xt[0];x1=xt[xt.length-1];}
+  }
+  const ysv=pts.map(p=>p._y);let y0=Math.min(...ysv),y1=Math.max(...ysv);
+  if(y0===y1){y0-=1;y1+=1;}
+  const yt=niceTicks(y0,y1,4);y0=yt[0];y1=yt[yt.length-1];
+  const sx=v=>pts.length===1?L+pw/2:L+(v-x0)/(x1-x0)*pw;
+  const sy=v=>T+ph-(v-y0)/(y1-y0)*ph;
+  return{pts,time,cat,W,H,L,R,T,B,pw,ph,x0,x1,y0,y1,xt,yt,sx,sy};
+}
+function slopeInfo(G,g,i){
+  const p=G.pts,n=p.length;
+  const u=G.time?((G.x1-G.x0)<172800000?[3600000,"/hr"]:[86400000,"/day"]):G.cat?[1,"/step"]:[1,"/"+String(g.xLabel||"X").slice(0,8)];
+  const sl=(a,b)=>{const dx=p[b]._x-p[a]._x;return dx===0?null:(p[b]._y-p[a]._y)/dx*u[0];};
+  const inn=i>0?sl(i-1,i):null,out=i<n-1?sl(i,i+1):null;
+  const at=(i>0&&i<n-1)?sl(i-1,i+1):(i>0?inn:out);
+  return{at,inn,out,unit:u[1],a:i>0?i-1:i,b:i<n-1?i+1:i};
+}
+function fmtSlope(v){if(v==null)return"—";if(v===0)return"0";return(v>0?"+":"−")+(+Math.abs(v).toPrecision(3));}
+function slopeArrow(v){return v==null?"":v>0?"↗":v<0?"↘":"→";}
+
+function graphChart(g,si){
+  const col=g.color||GRAPH_COLORS[0];
+  if(!(g.points||[]).length)return `<div style="padding:26px 0;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--txt-faint)">NO DATA POINTS YET</div>`;
+  const G=graphGeom(g),{pts,time,cat,W,H,L,R,T,pw,ph,yt,xt,sx,sy,x0,x1}=G;
+  const mono='font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#7385a0"';
+  let d="";pts.forEach((p,i)=>{d+=(i?"L":"M")+sx(p._x).toFixed(1)+" "+sy(p._y).toFixed(1)+" ";});
+  const area=d+`L${sx(pts[pts.length-1]._x).toFixed(1)} ${T+ph} L${sx(pts[0]._x).toFixed(1)} ${T+ph} Z`;
+  const gid="gg_"+g.id,cid="gcl_"+g.id;
+  let xl="";
+  if(cat){const step=Math.ceil(pts.length/6);
+    pts.forEach((p,i)=>{if(i%step===0)xl+=`<text x="${sx(i).toFixed(1)}" y="${H-9}" text-anchor="middle" ${mono}>${esc(String(p.x).slice(0,7))}</text>`;});}
+  else xt.forEach((t,i)=>{const anchor=i===0?"start":i===xt.length-1?"end":"middle";
+    xl+=`<text x="${sx(t).toFixed(1)}" y="${H-9}" text-anchor="${anchor}" ${mono}>${time?fmtXTime(t,x1-x0):fmtNum(t)}</text>`;});
+  const r=pts.length>80?0:pts.length>40?1.8:3;
+  let sel="";
+  if(si!=null&&pts[si]){
+    const p=pts[si],px=sx(p._x),py=sy(p._y),S=slopeInfo(G,g,si);let tan="";
+    if(pts.length>1&&S.a!==S.b){const dxp=sx(pts[S.b]._x)-sx(pts[S.a]._x),dyp=sy(pts[S.b]._y)-sy(pts[S.a]._y);
+      if(dxp!==0){const m=dyp/dxp;
+        tan=`<line x1="${(px-44).toFixed(1)}" y1="${(py-m*44).toFixed(1)}" x2="${(px+44).toFixed(1)}" y2="${(py+m*44).toFixed(1)}" stroke="#f5a623" stroke-width="1.6" stroke-dasharray="4 3" clip-path="url(#${cid})"/>`;}}
+    sel=`<line x1="${px.toFixed(1)}" x2="${px.toFixed(1)}" y1="${T}" y2="${T+ph}" stroke="#f5a623" stroke-opacity=".35" stroke-dasharray="2 3"/>${tan}
+      <circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="5.5" fill="#f5a623" stroke="#070a10" stroke-width="2"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;cursor:pointer" onclick="graphTap(event,'${g.id}')">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${col}" stop-opacity="0.28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient>
+      <clipPath id="${cid}"><rect x="${L}" y="${T}" width="${pw}" height="${ph}"/></clipPath></defs>
+    ${yt.map(v=>`<line x1="${L}" x2="${W-R}" y1="${sy(v).toFixed(1)}" y2="${sy(v).toFixed(1)}" stroke="#1c2735" stroke-width="1"/>
+      <text x="${L-5}" y="${(sy(v)+3).toFixed(1)}" text-anchor="end" ${mono}>${fmtNum(v)}</text>`).join("")}
+    ${xl}
+    ${pts.length>1?`<path d="${area}" fill="url(#${gid})"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`:""}
+    ${r?pts.map(p=>`<circle cx="${sx(p._x).toFixed(1)}" cy="${sy(p._y).toFixed(1)}" r="${r}" fill="#070a10" stroke="${col}" stroke-width="2"/>`).join(""):""}
+    ${sel}
+  </svg>`;
+}
+function graphReadout(g,si){
+  const n=(g.points||[]).length,hint=t=>`<div style="margin-top:9px;text-align:center;font-family:var(--mono);font-size:9.5px;color:var(--txt-faint);letter-spacing:.5px">${t}</div>`;
+  if(n<2)return hint("ADD 2+ POINTS TO READ SLOPE");
+  if(si==null)return hint("TAP A POINT ON THE GRAPH TO READ ITS SLOPE");
+  const G=graphGeom(g),p=G.pts[si],S=slopeInfo(G,g,si),cum=g.yMode==="cumulative",ends=(si===0||si===n-1);
+  const xs=G.time?fmtD(p.ts)+" "+fmtTime(p.ts):esc(p.x);
+  const nb=(l,a)=>`<button class="btn sm ghost" style="padding:5px 11px" onclick="graphStep('${g.id}',${a})">${l}</button>`;
+  return `<div style="margin-top:10px;padding:11px 12px;border:1px solid #f5a62350;border-radius:10px;background:#f5a62308">
+    <div style="display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:var(--txt-dim)">
+      ${nb("◂",-1)}<span style="flex:1;text-align:center">POINT ${si+1} / ${n}</span>${nb("▸",1)}${nb("✕","null")}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:9px"><div style="flex:1;min-width:0;font-family:var(--mono);font-size:11px;color:var(--txt-dim)">${xs} → <b style="color:var(--txt)">${fmtNum(p._y)}</b>${cum?` <span style="color:var(--txt-faint)">(entry ${fmtNum(p._raw)})</span>`:""}</div>
+      <button class="btn sm ghost" style="padding:5px 11px" onclick="openPointForm('${graphOwner(g.id)}','${g.id}','${p.id}',false,'graph')">✎ EDIT</button></div>
+    <div style="display:flex;align-items:baseline;gap:8px;margin-top:7px">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--txt-dim)">SLOPE</span>
+      <span style="font-family:var(--mono);font-size:22px;font-weight:700;color:#f5a623">${slopeArrow(S.at)} ${fmtSlope(S.at)}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--txt-dim)">${esc(S.unit)}</span></div>
+    <div style="font-family:var(--mono);font-size:10px;color:var(--txt-faint);margin-top:5px">IN ${fmtSlope(S.inn)} · OUT ${fmtSlope(S.out)}${ends?" · ONE-SIDED":""}</div></div>`;
+}
+function graphBlock(g){
+  const c=g.color||GRAPH_COLORS[0],cum=g.yMode==="cumulative",n=(g.points||[]).length;
+  let si=graphSel[g.id];if(si!=null&&si>=n){delete graphSel[g.id];si=null;}
+  const seg=(m,l)=>`<button class="chip ${(m==="cumulative")===cum?"sel":""}" style="color:${c};padding:6px 10px;font-size:10px" onclick="setGraphMode('${g.id}','${m}')">${l}</button>`;
+  let stats="";
+  if(n){const ys=graphPts(g).pts.map(p=>p._y);
+    stats=`<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--txt-dim);margin-top:8px;padding:0 2px">
+      <span>${cum?"TOTAL":"LATEST"} <b style="color:var(--txt)">${fmtNum(ys[n-1])}</b></span>
+      <span>MIN <b style="color:var(--txt)">${fmtNum(Math.min(...ys))}</b></span>
+      <span>MAX <b style="color:var(--txt)">${fmtNum(Math.max(...ys))}</b></span></div>`;}
+  return `<div class="chips" style="gap:6px;margin-bottom:8px">${seg("single","— SINGLE")}${seg("cumulative","Σ ACCUMULATIVE")}</div>
+    ${graphChart(g,si)}${graphReadout(g,si)}${stats}`;
+}
+function paintGraph(gid){const el=document.getElementById("gc_"+gid),g=findGraph(gid);if(el&&g)el.innerHTML=graphBlock(g);}
+function setGraphMode(gid,m){const g=findGraph(gid);if(!g)return;g.yMode=m;save();paintGraph(gid);}
+function graphTap(e,gid){
+  const g=findGraph(gid);if(!g||!(g.points||[]).length)return;
+  const G=graphGeom(g),r=e.currentTarget.getBoundingClientRect(),vx=(e.clientX-r.left)/r.width*G.W;
+  let best=0,bd=1e9;G.pts.forEach((p,i)=>{const dd=Math.abs(G.sx(p._x)-vx);if(dd<bd){bd=dd;best=i;}});
+  graphSel[gid]=best;paintGraph(gid);
+}
+function graphStep(gid,dir){
+  const g=findGraph(gid);if(!g)return;const n=(g.points||[]).length;
+  if(dir===null){delete graphSel[gid];}
+  else{const cur=graphSel[gid];graphSel[gid]=cur==null?(dir>0?0:n-1):Math.max(0,Math.min(n-1,cur+dir));}
+  paintGraph(gid);
+}
+
+function graphsSection(o){
+  const gs=o.graphs||[];
+  return `<div class="slabel">Graphs</div>
+    ${gs.length?gs.map(g=>{
+      const c=g.color||GRAPH_COLORS[0],P=g.points||[],n=P.length,ys=P.map(p=>p.y);
+      return `<div class="panel brk" style="padding:14px 12px 12px;margin-bottom:10px;border-color:${c}40">
+        <div style="display:flex;align-items:center;gap:9px;margin-bottom:5px;padding:0 2px">
+          <span style="width:9px;height:9px;border-radius:2px;background:${c};box-shadow:0 0 8px ${c};flex-shrink:0"></span>
+          <b style="font-size:14px;flex:1;min-width:0">${esc(g.name)}</b>
+          <span class="cad" style="color:${c}">${n} PTS</span></div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-family:var(--mono);font-size:9.5px;color:var(--txt-faint);letter-spacing:.5px;margin-bottom:8px;padding:0 2px">
+          <span>▲ ${esc(g.yLabel||"Y")}</span><span>${esc(g.xMode==="time"?"TIME · AUTO":(g.xLabel||"X"))} ▶</span></div>
+        <div id="gc_${g.id}">${graphBlock(g)}</div>
+        <div style="display:flex;gap:7px;margin-top:11px">
+          <button class="btn sm" style="flex:1;color:${c};border-color:${c}55" onclick="openPointForm('${o.id}','${g.id}')">+ ADD POINT</button>
+          ${g.xMode==="time"?`<button class="btn sm ghost" onclick="openPointForm('${o.id}','${g.id}',null,true)">⏪ LOG PAST</button>`:""}
+          <button class="btn sm ghost" onclick="openPointList('${o.id}','${g.id}')">☰</button>
+          <button class="btn sm ghost" onclick="openGraphForm('${o.id}','${g.id}')">✎</button>
+        </div></div>`;}).join("")
+    :`<div class="panel" style="padding:16px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--txt-faint)">NO GRAPHS DEFINED</div>`}
+    <button class="btn full ghost sm" style="margin-top:9px" onclick="openGraphForm('${o.id}')">+ NEW GRAPH</button>`;
+}
+
+function gxToggle(){const w=document.getElementById("g_xl_wrap");if(w)w.style.display=pick.gx==="manual"?"":"none";}
+function openGraphForm(opId,gid){
+  const o=getOp(opId);const g=gid?(o.graphs||[]).find(x=>x.id===gid):null;
+  pick={gy:g&&g.yMode==="cumulative"?"cumulative":"single",gx:g?g.xMode:"time",gc:g?(g.color||GRAPH_COLORS[0]):GRAPH_COLORS[0]};
+  const locked=!!(g&&(g.points||[]).length);
+  modal(`<div class="grab"></div><h2>${g?"Edit Graph":"New Graph"}</h2><div class="sub">${esc(o.name)}</div>
+    <div class="field"><label>Graph Name</label><input id="g_name" value="${g?esc(g.name):""}" placeholder="e.g. Daily Revenue"></div>
+    <div class="field"><label>X Axis</label>
+      ${locked?`<div style="font-family:var(--mono);font-size:11px;color:var(--txt-dim)">${g.xMode==="time"?"TIME · AUTOMATIC":"MANUAL"} <span style="color:var(--txt-faint)">— locked once points exist</span></div>`
+      :`<div class="chips">
+        <button class="chip ${pick.gx==="time"?"sel":""}" style="color:var(--cyan)" onclick="setPick('gx','time',this);gxToggle()">◷ TIME · AUTO</button>
+        <button class="chip ${pick.gx==="manual"?"sel":""}" style="color:var(--violet)" onclick="setPick('gx','manual',this);gxToggle()"># MANUAL</button></div>`}</div>
+    <div class="field" id="g_xl_wrap" style="${pick.gx==="manual"?"":"display:none"}"><label>X Axis Name</label>
+      <input id="g_xl" value="${g&&g.xMode==="manual"?esc(g.xLabel||""):""}" placeholder="e.g. Week, Distance, Batch"></div>
+    <div class="field"><label>Y Axis Name</label><input id="g_yl" value="${g?esc(g.yLabel||""):""}" placeholder="e.g. Revenue ($), Weight (kg)"></div>
+    <div class="field"><label>Y Values</label><div class="chips">
+      <button class="chip ${pick.gy==="single"?"sel":""}" style="color:var(--cyan)" onclick="setPick('gy','single',this)">— SINGLE ENTRIES</button>
+      <button class="chip ${pick.gy==="cumulative"?"sel":""}" style="color:var(--amber)" onclick="setPick('gy','cumulative',this)">Σ ACCUMULATIVE</button></div></div>
+    <div class="field"><label>Color</label><div class="chips">
+      ${GRAPH_COLORS.map(c=>`<button class="chip ${pick.gc===c?"sel":""}" style="color:${c}" onclick="setPick('gc','${c}',this)"><span class="dotc"></span></button>`).join("")}</div></div>
+    <button class="btn primary full" onclick="saveGraph('${opId}','${gid||""}')">${g?"SAVE GRAPH":"CREATE GRAPH"}</button>
+    ${g?`<button class="btn danger full ghost" style="margin-top:10px" onclick="delGraph('${opId}','${gid}')">DELETE GRAPH</button>`:""}`);
+}
+function saveGraph(opId,gid){
+  const o=getOp(opId);const name=val("g_name");if(!name){toast("Name required");return;}
+  o.graphs=o.graphs||[];
+  const f={name,xMode:pick.gx,xLabel:pick.gx==="manual"?(val("g_xl")||"X"):"Time",yLabel:val("g_yl")||"Y",yMode:pick.gy,color:pick.gc};
+  if(gid){Object.assign(o.graphs.find(x=>x.id===gid),f);toast("Graph updated");}
+  else{o.graphs.push({id:uid(),...f,createdAt:new Date().toISOString(),points:[]});
+    logSys(o,"graph-add",{text:name+(f.xMode==="time"?" · time axis":" · "+f.xLabel+" / "+f.yLabel)});toast("Graph created");}
+  save();closeModal();go("operation",opId);
+}
+function delGraph(opId,gid){
+  if(!confirm("Delete this graph and all its points?"))return;
+  const o=getOp(opId);o.graphs=(o.graphs||[]).filter(x=>x.id!==gid);
+  save();closeModal();toast("Graph deleted");go("operation",opId);
+}
+function toLocalInput(ts){const d=new Date(ts),p=n=>String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes());}
+/* pid = edit that point; past = time graph entry at an earlier date/time */
+let ptReturn="list";
+function graphOwner(gid){const o=DB.operations.find(o=>(o.graphs||[]).some(g=>g.id===gid));return o?o.id:"";}
+function openPointForm(opId,gid,pid,past,from){ptReturn=from||"list";
+  const o=getOp(opId),g=o.graphs.find(x=>x.id===gid),p=pid?g.points.find(x=>x.id===pid):null,time=g.xMode==="time";
+  const when=time&&(p||past);
+  modal(`<div class="grab"></div><h2>${p?"Edit Point":past?"Log Past":"Add Point"}</h2><div class="sub">${esc(g.name)}</div>
+    ${time?(when?`<div class="field"><label>Date &amp; Time <span class="opt">(X axis)</span></label><input id="pt_ts" type="datetime-local" max="${toLocalInput(new Date())}" value="${toLocalInput(p?p.ts:new Date())}"></div>`
+        :`<p style="font-family:var(--mono);font-size:10px;color:var(--txt-dim);margin:0 0 14px">▸ X = current time (automatic)</p>`)
+      :`<div class="field"><label>${esc(g.xLabel||"X")} <span class="opt">(number or label)</span></label><input id="pt_x" value="${p?esc(p.x):""}" placeholder="e.g. 12 or Week 3"></div>`}
+    <div class="field"><label>${esc(g.yLabel||"Y")} <span class="opt">(number)</span></label><input id="pt_y" type="number" step="any" value="${p?p.y:""}" placeholder="e.g. 42.5"></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><input id="pt_note" value="${p?esc(p.note||""):""}" placeholder="Context for this point…"></div>
+    <button class="btn primary full" onclick="savePoint('${opId}','${gid}','${pid||""}')">${p?"SAVE POINT":past?"▸ LOG PAST POINT":"▸ ADD POINT"}</button>`);
+}
+function savePoint(opId,gid,pid){
+  const o=getOp(opId),g=o.graphs.find(x=>x.id===gid);
+  const y=parseFloat(val("pt_y"));if(isNaN(y)){toast("Enter a number for Y");return;}
+  const p=pid?g.points.find(x=>x.id===pid):null,f={y,note:val("pt_note")},tsEl=document.getElementById("pt_ts");
+  if(tsEl){const t=new Date(tsEl.value);
+    if(!tsEl.value||isNaN(t)){toast("Pick a date & time");return;}
+    if(t.getTime()>Date.now()+60000){toast("Pick a past time");return;}
+    f.ts=t.toISOString();}
+  if(g.xMode==="manual"){const x=val("pt_x");if(!x){toast("X value required");return;}f.x=x;}
+  if(p)Object.assign(p,f);else(g.points=g.points||[]).push({id:uid(),ts:new Date().toISOString(),...f});
+  save();
+  if(p){toast("Point updated");
+    if(ptReturn==="graph"){closeModal();const ix=graphPts(g).pts.findIndex(x=>x.id===pid);if(ix>=0)graphSel[gid]=ix;paintGraph(gid);}
+    else{render();openPointList(opId,gid);}}
+  else{closeModal();toast(f.ts?"Past point logged":"Point added");go("operation",opId);}
+}
+function openPointList(opId,gid){
+  const o=getOp(opId);const g=o.graphs.find(x=>x.id===gid);const P=g.xMode==="time"?(g.points||[]).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)):(g.points||[]).slice().reverse();
+  modal(`<div class="grab"></div><h2>Data Points</h2><div class="sub">${esc(g.name)} · ${P.length} total</div>
+    <div style="max-height:55vh;overflow:auto">
+    ${P.length?P.map(p=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--grid)">
+      <div style="flex:1;min-width:0">
+        <div style="font-family:var(--mono);font-size:12px">${g.xMode==="time"?fmtD(p.ts)+" "+fmtTime(p.ts):esc(p.x)} → <b>${fmtNum(p.y)}</b></div>
+        <div style="font-size:11px;color:var(--txt-faint);margin-top:2px">${g.xMode==="time"?"":fmtD(p.ts)+" "+fmtTime(p.ts)}${p.note?(g.xMode==="time"?"":" · ")+esc(p.note):""}</div></div>
+      <div style="display:flex;gap:6px"><button class="btn sm ghost" onclick="openPointForm('${opId}','${gid}','${p.id}')">✎</button>
+      <button class="btn sm ghost danger" onclick="delPoint('${opId}','${gid}','${p.id}')">✕</button></div></div>`).join("")
+    :`<div style="padding:20px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--txt-faint)">NO POINTS</div>`}</div>`);
+}
+function delPoint(opId,gid,pid){
+  const g=getOp(opId).graphs.find(x=>x.id===gid);g.points=g.points.filter(p=>p.id!==pid);
+  save();render();openPointList(opId,gid);
+}
+
 /* ---- OMC timeline ---- */
 function sysNode(l){
   const S=STATUSES;let title="",body=l.text||"",color="var(--txt-dim)",icon="◇",fill=true;
@@ -663,6 +917,7 @@ function sysNode(l){
     case"phase-add":title="PHASE DEFINED";color="var(--violet)";icon="◳";fill=false;body=l.text||"";break;
     case"phase-start":title="PHASE STARTED";color="var(--violet)";icon="▸";body=l.text||"";break;
     case"phase-done":title="PHASE COMPLETED";color="var(--violet)";icon="✦";body=l.text||"";break;
+    case"graph-add":title="GRAPH CREATED";color="var(--blue)";icon="▥";fill=false;body=l.text||"";break;
     default:title=l.kind.toUpperCase();
   }
   return{kind:"system",ts:l.ts,title,body,color,icon,fill};

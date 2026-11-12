@@ -280,6 +280,49 @@ select{-webkit-appearance:none;appearance:none;
 
 .confirm .sheet{max-width:380px;border-radius:16px;border-bottom:1px solid var(--grid);margin-bottom:auto;margin-top:auto}
 .confirm{align-items:center}
+
+/* ================= DESKTOP LAYOUT (>= 900px) ================= */
+@media (min-width:900px){
+  #app{max-width:none;margin:0 0 0 232px;padding-bottom:48px}
+  .topbar{position:fixed;top:0;left:0;width:232px;z-index:60;padding:22px 20px 0;background:none;display:block}
+  .topbar .sys{position:fixed;top:20px;right:32px;z-index:60;background:var(--panel);border:1px solid var(--grid);border-radius:10px;padding:8px 13px}
+  #screen{padding-top:22px}
+  .nav{top:0;bottom:0;left:0;right:auto;width:232px;border-top:0;border-right:1px solid var(--grid);background:var(--panel);-webkit-backdrop-filter:none;backdrop-filter:none;padding:92px 12px 16px}
+  .nav .inner{display:flex;flex-direction:column;gap:4px;max-width:none;margin:0}
+  .navbtn{flex-direction:row;justify-content:flex-start;gap:13px;padding:12px 14px;border-radius:10px}
+  .navbtn span{font-size:10.5px;letter-spacing:1.5px}
+  .navbtn.on{background:var(--panel-2);box-shadow:inset 3px 0 0 var(--cyan)}
+  .navbtn:not(.on):hover{background:var(--panel-2)}
+  .view{max-width:1400px;margin:0 auto;padding:0 36px 48px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px;align-items:start}
+  .view>.phead,.view>.slabel,.view>.statgrid,.view>.actionrow,.view>.empty-state,.view>.backbtn{grid-column:1/-1}
+  .view>.dist{grid-column:span 2}
+  .view>.phead{margin:0}
+  .view>.slabel{margin:14px 2px 0}
+  .view>.actionrow{max-width:520px;margin:0}
+  .view>.statgrid{grid-template-columns:repeat(4,minmax(0,1fr));margin:0}
+  .view>.statgrid .stat.big{grid-column:1/-1}
+  .opcard,.arccard,.protoset,.protoitem,.view>.panel{margin-bottom:0!important}
+  .opcard:hover,.protoset:hover,.protoitem:hover{border-color:rgba(52,224,200,.35)}
+  .fab{right:36px;bottom:32px}
+  .toast{bottom:32px}
+  .scrim{align-items:center}
+  .sheet{border-radius:18px;border-bottom:1px solid var(--grid);max-height:88vh}
+  /* operation detail: summary + timeline left, phases + graphs right */
+  .view.detail{max-width:1500px;grid-template-columns:420px minmax(0,1fr);grid-template-rows:auto auto 1fr}
+  .view.detail .dA{grid-column:1;grid-row:1}
+  .view.detail .dC{grid-column:1;grid-row:2}
+  .view.detail .dD{grid-column:1;grid-row:3}
+  .view.detail .dB{grid-column:2;grid-row:1/4;display:flex;flex-direction:column;gap:6px}
+  .dB .secbody{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:14px 16px;align-items:start}
+  .dB .secbody>.btn,.dB .secbody>.empty-state{grid-column:1/-1}
+  .dB .secbody>.panel{margin-bottom:0!important}
+  .dB>.slabel{margin:10px 2px 4px}
+}
+@media (min-width:1350px){.view{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.slabel.sec{cursor:pointer;-webkit-user-select:none;user-select:none}
+.slabel.sec .chev{display:inline-block;font-size:11px;color:var(--txt-faint);transition:transform .15s}
+.slabel.sec.closed .chev{transform:rotate(-90deg)}
+.secbody.closed{display:none!important}
 </style>
 </head>
 <body>
@@ -410,7 +453,7 @@ function viewDashboard(){
   const byStatus={};Object.keys(STATUSES).forEach(k=>byStatus[k]=0);
   ops.forEach(o=>byStatus[o.status]=(byStatus[o.status]||0)+1);
   const byType={alpha:0,beta:0,omega:0};ops.forEach(o=>byType[o.type]=(byType[o.type]||0)+1);
-  let activeProtocols=0;ops.forEach(o=>(o.activations||[]).forEach(a=>{if(a.open||!a.end||new Date(a.end)>=new Date())if(a.active!==false)activeProtocols++;}));
+  let activeProtocols=0;ops.forEach(o=>(o.activations||[]).forEach(a=>{if(ACTIVE_STATUSES.includes(o.status)&&actLive(a,o))activeProtocols++;}));
   // recent activity across ops
   let feed=[];
   ops.forEach(o=>{(o.logs||[]).forEach(l=>feed.push({...l,opName:o.name,opId:o.id}));
@@ -511,9 +554,10 @@ function viewOperationDetail(id){
   const progressLogs=(o.logs||[]).filter(l=>l.type==="progress");
   const eventLogs=(o.logs||[]).filter(l=>l.type==="event");
   const lastP=progressLogs.length?progressLogs[progressLogs.length-1].progress:null;
-  const liveProtos=(o.activations||[]).filter(a=>a.active!==false&&(a.open||!a.end||new Date(a.end)>=new Date()));
+  const liveProtos=(o.activations||[]).filter(a=>actLive(a,o));
 
-  return `<div class="view">
+  return `<div class="view detail">
+    <div class="dA">
     <button class="backbtn" onclick="go('operations')">◂ ALL OPERATIONS</button>
     <div class="panel brk dethead">
       <div class="top">${typeSymBox(o.type)}
@@ -541,14 +585,18 @@ function viewOperationDetail(id){
         <div class="num">${eventLogs.length}</div></div>
     </div>
 
-    ${progressLogs.length>=2?`<div class="slabel">Progress Trajectory</div>
-      <div class="panel brk" style="padding:15px 12px 10px">${sparkline(progressLogs)}</div>`:""}
+    ${progressLogs.length>=2?sec(o,"traj","Progress Trajectory",`<div class="panel brk" style="padding:15px 12px 10px">${sparkline(progressLogs)}</div>`):""}
 
-    ${phasesSection(o)}
+    </div><div class="dB">
+    ${secFrom(o,"phases",phasesSection(o))}
 
-    ${graphsSection(o)}
+    ${secFrom(o,"graphs",graphsSection(o))}
 
-    ${liveProtos.length?`<div class="slabel">Live Protocols</div>
+    ${reportsSection(o)}
+    ${reportStatsSection(o)}
+
+    </div><div class="dC">
+    ${secFrom(o,"live",liveProtos.length?`<div class="slabel">Live Protocols</div>
       ${liveProtos.map(a=>`<div class="panel" style="padding:12px 14px;margin-bottom:9px;border-color:${a.color}55">
         <div style="display:flex;align-items:center;gap:9px">
           <span class="pcode" style="color:${a.color};border-color:${a.color};background:${a.color}15">${esc(a.code||"––")}</span>
@@ -556,18 +604,18 @@ function viewOperationDetail(id){
           <button class="btn sm" style="margin-left:auto;color:var(--red);border-color:#3a2230;padding:5px 10px" onclick="deactivate('${o.id}','${a.id}')">END</button>
         </div>
         ${a.objectives?`<div style="font-size:12px;color:var(--txt-dim);margin-top:7px">${esc(a.objectives)}</div>`:""}
-      </div>`).join("")}`:""}
+      </div>`).join("")}`:"")}
 
     <div class="actionrow">
       <button class="btn primary" onclick="openLog('${o.id}')">▸ LOG</button>
       <button class="btn amber" onclick="openActivate('${o.id}')">⚑ ACTIVATE PROTOCOL</button>
     </div>
 
-    <div class="slabel">Operational Monitoring Center</div>
-    ${renderOMC(o)}
+    </div><div class="dD">
+    ${sec(o,"omc","Operational Monitoring Center",renderOMC(o))}
 
     <button class="btn danger full ghost" style="margin-top:18px" onclick="confirmDelete('${o.id}')">DELETE OPERATION</button>
-  </div>`;
+  </div></div>`;
 }
 
 function sparkline(plogs){
@@ -898,6 +946,126 @@ function delPoint(opId,gid,pid){
   save();render();openPointList(opId,gid);
 }
 
+/* ============================================================
+   COLLAPSIBLE SECTIONS (state kept per device in localStorage "omc_ui_v1", not in your data)
+   ============================================================ */
+const UI_KEY="omc_ui_v1";
+function uiGet(){try{return JSON.parse(localStorage.getItem(UI_KEY))||{};}catch(e){return{};}}
+function secClosed(oid,key){return !!(uiGet()[oid]||{})[key];}
+function toggleSec(oid,key){
+  const u=uiGet();u[oid]=u[oid]||{};u[oid][key]=!u[oid][key];if(!u[oid][key])delete u[oid][key];
+  try{localStorage.setItem(UI_KEY,JSON.stringify(u));}catch(e){}
+  const c=secClosed(oid,key),h=document.getElementById("sh_"+key),b=document.getElementById("sb_"+key);
+  if(h)h.classList.toggle("closed",c);if(b)b.classList.toggle("closed",c);
+  if(!c&&key==="omc")requestAnimationFrame(paintRail);
+}
+function sec(o,key,title,body){const c=secClosed(o.id,key);
+  return `<div class="slabel sec ${c?"closed":""}" id="sh_${key}" onclick="toggleSec('${o.id}','${key}')"><span class="chev">▾</span>${title}</div><div class="secbody ${c?"closed":""}" id="sb_${key}">${body}</div>`;}
+function secFrom(o,key,html){const m=html.match(/^\s*<div class="slabel">(.*?)<\/div>([\s\S]*)$/);return m?sec(o,key,m[1],m[2]):html;}
+
+/* ============================================================
+   REPORTS — per-operation frequency + template, stored in
+   op.reportCfg {freq,fields:[{id,name,unit}]} and op.reports
+   [{id,ts,freq,period,text,values:{fieldId:number}}]  (all optional/additive)
+   ============================================================ */
+const FREQS={daily:{label:"Daily",unit:"Day"},weekly:{label:"Weekly",unit:"Week"},monthly:{label:"Monthly",unit:"Month"}};
+function rcfg(o){const c=o.reportCfg||{};return{freq:FREQS[c.freq]?c.freq:"weekly",fields:c.fields||[]};}
+const fmtTot=v=>(+v.toFixed(2)).toLocaleString();
+function setReportFreq(oid,k){const o=getOp(oid);o.reportCfg=o.reportCfg||{fields:[]};o.reportCfg.freq=k;save();render();}
+
+function reportCard(o,r,c){
+  const F=FREQS[r.freq]||FREQS.weekly;
+  const vals=c.fields.filter(f=>r.values&&r.values[f.id]!=null).map(f=>`<span style="font-family:var(--mono);font-size:10.5px;padding:4px 9px;border:1px solid var(--grid);border-radius:20px"><span style="color:var(--txt-dim)">${esc(f.name)}</span> <b>${fmtNum(r.values[f.id])}</b>${f.unit?" "+esc(f.unit):""}</span>`).join("");
+  return `<div class="panel" style="padding:13px 14px;margin-bottom:9px">
+    <div style="display:flex;align-items:center;gap:9px"><b style="font-size:14px">${F.unit} ${esc(r.period)}</b><span class="cad">${fmtD(r.ts)}</span>
+      <span style="margin-left:auto;display:flex;gap:6px"><button class="btn sm ghost" onclick="openReportForm('${o.id}','${r.id}')">✎</button><button class="btn sm ghost danger" onclick="delReport('${o.id}','${r.id}')">✕</button></span></div>
+    ${vals?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">${vals}</div>`:""}
+    ${r.text?`<div style="font-size:13px;line-height:1.5;color:var(--txt-dim);margin-top:9px;white-space:pre-wrap;word-break:break-word">${esc(r.text)}</div>`:""}
+  </div>`;
+}
+function reportsSection(o){
+  const c=rcfg(o),F=FREQS[c.freq],R=(o.reports||[]).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+  const seg=k=>`<button class="chip ${c.freq===k?"sel":""}" style="color:var(--cyan);padding:6px 10px;font-size:10px" onclick="setReportFreq('${o.id}','${k}')">${FREQS[k].label.toUpperCase()}</button>`;
+  return sec(o,"reports","Reports",`<div class="chips" style="gap:6px;margin-bottom:10px;grid-column:1/-1">${Object.keys(FREQS).map(seg).join("")}</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;grid-column:1/-1">
+      <button class="btn primary" style="flex:1" onclick="openReportForm('${o.id}')">▸ FILE ${F.label.toUpperCase()} REPORT</button>
+      <button class="btn ghost" onclick="openTemplate('${o.id}')">⚙ TEMPLATE</button></div>
+    ${R.length?R.map(r=>reportCard(o,r,c)).join(""):`<div class="panel" style="padding:18px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--txt-faint)">NO REPORTS FILED</div>`}`);
+}
+function miniBars(vs){
+  vs=vs.slice(-24);const n=vs.length,W=300,H=44,gap=3,bw=Math.min(26,Math.max(2,(W-(n-1)*gap)/n));
+  const mn=Math.min(0,...vs),mx=Math.max(0,...vs),rng=(mx-mn)||1,y0=H-(0-mn)/rng*H;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:44px;display:block;margin:10px 0 2px">${vs.map((v,i)=>{
+    const y=H-(v-mn)/rng*H;return `<rect x="${(i*(bw+gap)).toFixed(1)}" y="${Math.min(y,y0).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1.5,Math.abs(y-y0)).toFixed(1)}" rx="1.5" fill="var(--cyan)" opacity=".75"/>`;}).join("")}</svg>`;
+}
+function reportStatsSection(o){
+  const c=rcfg(o);if(!c.fields.length)return"";
+  const R=(o.reports||[]).slice().sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+  const lab=`font-family:var(--mono);font-size:10px;color:var(--txt-dim)`;
+  return sec(o,"rstats","Report Data",c.fields.map(f=>{
+    const vs=R.filter(r=>r.values&&r.values[f.id]!=null).map(r=>r.values[f.id]);
+    const head=`<div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:14px;flex:1;min-width:0">${esc(f.name)}</b><span class="cad">${vs.length} ${vs.length===1?"ENTRY":"ENTRIES"}</span></div>`;
+    if(!vs.length)return `<div class="panel" style="padding:14px;margin-bottom:10px">${head}<div style="${lab};margin-top:10px">NO VALUES YET</div></div>`;
+    const tot=vs.reduce((a,b)=>a+b,0),u=f.unit?` <span style="font-size:14px;color:var(--txt-dim)">${esc(f.unit)}</span>`:"";
+    return `<div class="panel" style="padding:14px;margin-bottom:10px">${head}
+      <div style="font-family:var(--mono);font-size:28px;font-weight:600;letter-spacing:-1px;margin-top:6px;color:var(--cyan)">${fmtTot(tot)}${u}</div>
+      <div style="${lab}">TOTAL</div>${miniBars(vs)}
+      <div style="display:flex;justify-content:space-between;${lab};margin-top:6px">
+        <span>AVG <b style="color:var(--txt)">${fmtNum(tot/vs.length)}</b></span><span>MIN <b style="color:var(--txt)">${fmtNum(Math.min(...vs))}</b></span>
+        <span>MAX <b style="color:var(--txt)">${fmtNum(Math.max(...vs))}</b></span><span>LAST <b style="color:var(--txt)">${fmtNum(vs[vs.length-1])}</b></span></div></div>`;
+  }).join(""));
+}
+
+function openReportForm(opId,rid){
+  const o=getOp(opId),c=rcfg(o),r=rid?(o.reports||[]).find(x=>x.id===rid):null,fq=r?r.freq:c.freq,F=FREQS[fq];
+  const nums=(o.reports||[]).filter(x=>x.freq===fq).map(x=>parseFloat(x.period)).filter(n=>!isNaN(n));
+  const next=r?r.period:(nums.length?Math.max(...nums)+1:1);
+  modal(`<div class="grab"></div><h2>${r?"Edit":"File"} ${F.label} Report</h2><div class="sub">${esc(o.name)}</div>
+    <div class="field"><label>${F.unit} number</label><input id="rp_n" value="${esc(String(next))}" placeholder="e.g. 12"></div>
+    <div class="field"><label>Summary</label><textarea id="rp_t" style="min-height:130px" placeholder="Write the ${F.unit.toLowerCase()} summary…">${r?esc(r.text||""):""}</textarea></div>
+    ${c.fields.length?`<div class="field"><label>Quantitative fields</label>${c.fields.map(f=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span style="flex:1;min-width:0;font-size:13px">${esc(f.name)}</span>
+      <input id="rf_${f.id}" type="number" step="any" style="width:130px" value="${r&&r.values&&r.values[f.id]!=null?r.values[f.id]:""}" placeholder="0">
+      <span style="width:38px;font-size:11px;color:var(--txt-dim)">${esc(f.unit||"")}</span></div>`).join("")}</div>`
+      :`<p style="font-size:12px;color:var(--txt-faint);margin:0 0 14px">No quantitative fields yet. Add some under Customize template.</p>`}
+    <button class="btn primary full" onclick="saveReport('${opId}','${rid||""}')">${r?"SAVE REPORT":"▸ FILE REPORT"}</button>
+    <button class="btn ghost full" style="margin-top:10px" onclick="openTemplate('${opId}')">⚙ CUSTOMIZE TEMPLATE</button>`);
+}
+function saveReport(opId,rid){
+  const o=getOp(opId),c=rcfg(o),r=rid?(o.reports||[]).find(x=>x.id===rid):null,fq=r?r.freq:c.freq;
+  const period=val("rp_n");if(!period){toast("Enter the "+FREQS[fq].unit.toLowerCase()+" number");return;}
+  const values={};c.fields.forEach(f=>{const v=val("rf_"+f.id);if(v!==""&&!isNaN(parseFloat(v)))values[f.id]=parseFloat(v);});
+  const text=val("rp_t");
+  if(!text&&!Object.keys(values).length){toast("Write a summary or enter a value");return;}
+  o.reports=o.reports||[];
+  if(r){Object.assign(r,{period,text,values});}
+  else{o.reports.push({id:uid(),ts:new Date().toISOString(),freq:fq,period,text,values});
+    logSys(o,"report",{text:FREQS[fq].unit+" "+period+" "+FREQS[fq].label.toLowerCase()+" report filed"});}
+  save();closeModal();toast(r?"Report updated":"Report filed");render();
+}
+function delReport(opId,rid){
+  if(!confirm("Delete this report?"))return;
+  const o=getOp(opId);o.reports=(o.reports||[]).filter(x=>x.id!==rid);save();toast("Report deleted");render();
+}
+let tplDraft=null;
+function openTemplate(opId){const o=getOp(opId),c=rcfg(o);tplDraft={opId,freq:c.freq,fields:c.fields.map(f=>({...f}))};drawTemplate();}
+function syncTpl(){tplDraft.fields.forEach(f=>{const n=document.getElementById("tf_n_"+f.id),u=document.getElementById("tf_u_"+f.id);if(n)f.name=n.value;if(u)f.unit=u.value;});}
+function drawTemplate(){
+  const o=getOp(tplDraft.opId);
+  modal(`<div class="grab"></div><h2>Report Template</h2><div class="sub">${esc(o.name)} · unique to this operation</div>
+    <div class="field"><label>Frequency</label><div class="chips">${Object.keys(FREQS).map(k=>`<button class="chip ${tplDraft.freq===k?"sel":""}" style="color:var(--cyan)" onclick="syncTpl();tplDraft.freq='${k}';drawTemplate()">${FREQS[k].label}</button>`).join("")}</div></div>
+    <div class="field"><label>Quantitative fields <span class="opt">(numbers totaled across reports)</span></label>
+      ${tplDraft.fields.map(f=>`<div style="display:flex;gap:8px;margin-bottom:8px"><input id="tf_n_${f.id}" value="${esc(f.name)}" placeholder="Name, e.g. Revenue" style="flex:1;min-width:0"><input id="tf_u_${f.id}" value="${esc(f.unit||"")}" placeholder="Unit" style="width:84px"><button class="btn sm ghost danger" onclick="syncTpl();tplDraft.fields=tplDraft.fields.filter(x=>x.id!=='${f.id}');drawTemplate()">✕</button></div>`).join("")}
+      <button class="btn sm ghost" onclick="syncTpl();tplDraft.fields.push({id:uid(),name:'',unit:''});drawTemplate();document.getElementById('tf_n_'+tplDraft.fields[tplDraft.fields.length-1].id).focus()">+ ADD FIELD</button>
+      <p style="font-size:11.5px;color:var(--txt-faint);line-height:1.5;margin:10px 0 0">Removing a field hides its past values from reports and totals.</p></div>
+    <button class="btn primary full" onclick="saveTemplate()">SAVE TEMPLATE</button>`);
+}
+function saveTemplate(){
+  syncTpl();const o=getOp(tplDraft.opId);
+  o.reportCfg={freq:tplDraft.freq,fields:tplDraft.fields.filter(f=>f.name.trim()).map(f=>({id:f.id,name:f.name.trim(),unit:(f.unit||"").trim()}))};
+  save();closeModal();toast("Template saved");render();
+}
+
 /* ---- OMC timeline ---- */
 function sysNode(l){
   const S=STATUSES;let title="",body=l.text||"",color="var(--txt-dim)",icon="◇",fill=true;
@@ -918,10 +1086,17 @@ function sysNode(l){
     case"phase-start":title="PHASE STARTED";color="var(--violet)";icon="▸";body=l.text||"";break;
     case"phase-done":title="PHASE COMPLETED";color="var(--violet)";icon="✦";body=l.text||"";break;
     case"graph-add":title="GRAPH CREATED";color="var(--blue)";icon="▥";fill=false;body=l.text||"";break;
+    case"report":title="REPORT FILED";color="var(--violet)";icon="▤";fill=false;body=l.text||"";break;
     default:title=l.kind.toUpperCase();
   }
   return{kind:"system",ts:l.ts,title,body,color,icon,fill};
 }
+/* protocol liveness: date-only end = end of that day; a concluded operation (closed/aborted) ends its protocols */
+function actEnd(a){return /^\d{4}-\d{2}-\d{2}$/.test(a.end||"")?new Date(a.end+"T23:59:59"):new Date(a.end);}
+function opEndedTs(o){if(!o||!ENDED_STATUSES.includes(o.status))return null;
+  const l=(o.logs||[]).filter(x=>x.type==="system"&&x.kind==="status"&&x.to===o.status).sort((a,b)=>new Date(b.ts)-new Date(a.ts))[0];
+  return l?l.ts:(o.endDate||o.createdAt);}
+function actLive(a,o){return a.active!==false&&!opEndedTs(o)&&(a.open||!a.end||actEnd(a)>=new Date());}
 function buildTimeline(o){
   const nodes=[];const logs=o.logs||[];
   const hasDeployed=logs.some(l=>l.type==="system"&&l.kind==="deployed");
@@ -933,8 +1108,11 @@ function buildTimeline(o){
   });
   (o.activations||[]).forEach(a=>{
     nodes.push({kind:"proto-on",ts:a.start,title:"PROTOCOL ENGAGED",body:a.name,proto:a,color:a.color,code:a.code,actId:a.id});
-    if(a.active===false||(!a.open&&a.end)){
-      nodes.push({kind:"proto-off",ts:a.active===false?(a.endedAt||a.end||a.start):a.end,title:"PROTOCOL CLEARED",body:a.name,proto:a,color:a.color,code:a.code,actId:a.id});
+    if(!actLive(a,o)){
+      const cands=[];
+      if(a.active===false)cands.push(new Date(a.endedAt||a.end||a.start));
+      else{if(!a.open&&a.end)cands.push(actEnd(a));const oe=opEndedTs(o);if(oe)cands.push(new Date(oe));}
+      nodes.push({kind:"proto-off",ts:new Date(Math.min(...cands)).toISOString(),title:"PROTOCOL CLEARED",body:a.name,proto:a,color:a.color,code:a.code,actId:a.id});
     }
   });
   nodes.sort((x,y)=>new Date(y.ts)-new Date(x.ts)); // newest first (top)
@@ -983,14 +1161,14 @@ function paintRail(){
     const id=n.getAttribute("data-actid"),k=n.getAttribute("data-kind");
     if(!id)return;
     const m=n.querySelector(".marker");
-    const y=m.offsetTop+m.offsetHeight/2;
+    const y=n.offsetTop+m.offsetTop+m.offsetHeight/2;
     if(k==="proto-on")onNodes[id]=y;
     if(k==="proto-off")offNodes[id]=y;
   });
   let lane=0;
   (o.activations||[]).forEach(a=>{
     const startY=onNodes[a.id];if(startY==null)return;
-    const open=a.active!==false&&(a.open||!a.end||new Date(a.end)>=new Date());
+    const open=actLive(a,o);
     const endY=open?0:(offNodes[a.id]!=null?offNodes[a.id]:0); // open -> top (now)
     const top=Math.min(startY,endY),h=Math.abs(startY-endY);
     const seg=document.createElement("div");
@@ -1415,6 +1593,7 @@ function importData(e){const f=e.target.files[0];if(!f)return;const r=new FileRe
 /* ============================================================
    BOOT
    ============================================================ */
+window.addEventListener("resize",()=>{if(view.page==="operation")paintRail();});
 load();
 render();
 </script>

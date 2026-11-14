@@ -846,7 +846,7 @@ function graphsSection(o){
         <div style="display:flex;align-items:center;gap:9px;margin-bottom:5px;padding:0 2px">
           <span style="width:9px;height:9px;border-radius:2px;background:${c};box-shadow:0 0 8px ${c};flex-shrink:0"></span>
           <b style="font-size:14px;flex:1;min-width:0">${esc(g.name)}</b>
-          <span class="cad" style="color:${c}">${n} PTS</span></div>
+          ${rcfg(o).fields.some(f=>f.graphId===g.id)?`<span class="cad" style="color:var(--txt-dim)">⛓ REPORTS</span>`:""}<span class="cad" style="color:${c}">${n} PTS</span></div>
         <div style="display:flex;justify-content:space-between;gap:8px;font-family:var(--mono);font-size:9.5px;color:var(--txt-faint);letter-spacing:.5px;margin-bottom:8px;padding:0 2px">
           <span>▲ ${esc(g.yLabel||"Y")}</span><span>${esc(g.xMode==="time"?"TIME · AUTO":(g.xLabel||"X"))} ▶</span></div>
         <div id="gc_${g.id}">${graphBlock(g)}</div>
@@ -895,6 +895,7 @@ function saveGraph(opId,gid){
 function delGraph(opId,gid){
   if(!confirm("Delete this graph and all its points?"))return;
   const o=getOp(opId);o.graphs=(o.graphs||[]).filter(x=>x.id!==gid);
+  if(o.reportCfg)(o.reportCfg.fields||[]).forEach(f=>{if(f.graphId===gid)f.graphId=null;});
   save();closeModal();toast("Graph deleted");go("operation",opId);
 }
 function toLocalInput(ts){const d=new Date(ts),p=n=>String(n).padStart(2,"0");
@@ -973,18 +974,32 @@ function rcfg(o){const c=o.reportCfg||{};return{freq:FREQS[c.freq]?c.freq:"weekl
 const fmtTot=v=>(+v.toFixed(2)).toLocaleString();
 function setReportFreq(oid,k){const o=getOp(oid);o.reportCfg=o.reportCfg||{fields:[]};o.reportCfg.freq=k;save();render();}
 
+/* report date + link-to-graph sync (points made from reports carry src:{r:reportId,f:fieldId,d:date}) */
+const todayStr=()=>toLocalInput(new Date()).slice(0,10);
+const rdateStr=r=>r.date||toLocalInput(r.ts).slice(0,10);
+const reportTs=r=>{const d=rdateStr(r);return d===todayStr()?new Date().toISOString():new Date(d+"T12:00:00").toISOString();};
+function syncField(o,r,f){
+  const g=f.graphId&&(o.graphs||[]).find(x=>x.id===f.graphId);if(!g||g.xMode!=="time")return false;
+  if(!r.date)r.date=rdateStr(r);
+  const v=r.values&&r.values[f.id],p=(g.points||[]).find(x=>x.src&&x.src.r===r.id&&x.src.f===f.id);
+  if(v==null){if(p){g.points=g.points.filter(x=>x!==p);return true;}return false;}
+  const note=(FREQS[r.freq]||FREQS.weekly).unit+" "+r.period+" report";
+  if(p){if(p.src.d!==r.date){p.ts=reportTs(r);p.src.d=r.date;}p.y=v;p.note=note;}
+  else(g.points=g.points||[]).push({id:uid(),ts:reportTs(r),y:v,note,src:{r:r.id,f:f.id,d:r.date}});
+  return true;
+}
 function reportCard(o,r,c){
   const F=FREQS[r.freq]||FREQS.weekly;
   const vals=c.fields.filter(f=>r.values&&r.values[f.id]!=null).map(f=>`<span style="font-family:var(--mono);font-size:10.5px;padding:4px 9px;border:1px solid var(--grid);border-radius:20px"><span style="color:var(--txt-dim)">${esc(f.name)}</span> <b>${fmtNum(r.values[f.id])}</b>${f.unit?" "+esc(f.unit):""}</span>`).join("");
   return `<div class="panel" style="padding:13px 14px;margin-bottom:9px">
-    <div style="display:flex;align-items:center;gap:9px"><b style="font-size:14px">${F.unit} ${esc(r.period)}</b><span class="cad">${fmtD(r.ts)}</span>
+    <div style="display:flex;align-items:center;gap:9px"><b style="font-size:14px">${F.unit} ${esc(r.period)}</b><span class="cad">${fmtD(rdateStr(r)+"T12:00:00")}</span>
       <span style="margin-left:auto;display:flex;gap:6px"><button class="btn sm ghost" onclick="openReportForm('${o.id}','${r.id}')">✎</button><button class="btn sm ghost danger" onclick="delReport('${o.id}','${r.id}')">✕</button></span></div>
     ${vals?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">${vals}</div>`:""}
     ${r.text?`<div style="font-size:13px;line-height:1.5;color:var(--txt-dim);margin-top:9px;white-space:pre-wrap;word-break:break-word">${esc(r.text)}</div>`:""}
   </div>`;
 }
 function reportsSection(o){
-  const c=rcfg(o),F=FREQS[c.freq],R=(o.reports||[]).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+  const c=rcfg(o),F=FREQS[c.freq],R=(o.reports||[]).slice().sort((a,b)=>rdateStr(b).localeCompare(rdateStr(a))||new Date(b.ts)-new Date(a.ts));
   const seg=k=>`<button class="chip ${c.freq===k?"sel":""}" style="color:var(--cyan);padding:6px 10px;font-size:10px" onclick="setReportFreq('${o.id}','${k}')">${FREQS[k].label.toUpperCase()}</button>`;
   return sec(o,"reports","Reports",`<div class="chips" style="gap:6px;margin-bottom:10px;grid-column:1/-1">${Object.keys(FREQS).map(seg).join("")}</div>
     <div style="display:flex;gap:8px;margin-bottom:12px;grid-column:1/-1">
@@ -1000,7 +1015,7 @@ function miniBars(vs){
 }
 function reportStatsSection(o){
   const c=rcfg(o);if(!c.fields.length)return"";
-  const R=(o.reports||[]).slice().sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+  const R=(o.reports||[]).slice().sort((a,b)=>rdateStr(a).localeCompare(rdateStr(b))||new Date(a.ts)-new Date(b.ts));
   const lab=`font-family:var(--mono);font-size:10px;color:var(--txt-dim)`;
   return sec(o,"rstats","Report Data",c.fields.map(f=>{
     const vs=R.filter(r=>r.values&&r.values[f.id]!=null).map(r=>r.values[f.id]);
@@ -1022,11 +1037,12 @@ function openReportForm(opId,rid){
   const next=r?r.period:(nums.length?Math.max(...nums)+1:1);
   modal(`<div class="grab"></div><h2>${r?"Edit":"File"} ${F.label} Report</h2><div class="sub">${esc(o.name)}</div>
     <div class="field"><label>${F.unit} number</label><input id="rp_n" value="${esc(String(next))}" placeholder="e.g. 12"></div>
+    <div class="field"><label>Date</label><input id="rp_d" type="date" value="${r?rdateStr(r):todayStr()}"></div>
     <div class="field"><label>Summary</label><textarea id="rp_t" style="min-height:130px" placeholder="Write the ${F.unit.toLowerCase()} summary…">${r?esc(r.text||""):""}</textarea></div>
     ${c.fields.length?`<div class="field"><label>Quantitative fields</label>${c.fields.map(f=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
       <span style="flex:1;min-width:0;font-size:13px">${esc(f.name)}</span>
       <input id="rf_${f.id}" type="number" step="any" style="width:130px" value="${r&&r.values&&r.values[f.id]!=null?r.values[f.id]:""}" placeholder="0">
-      <span style="width:38px;font-size:11px;color:var(--txt-dim)">${esc(f.unit||"")}</span></div>`).join("")}</div>`
+      <span style="min-width:38px;font-size:11px;color:var(--txt-dim)">${f.graphId?"⛓ ":""}${esc(f.unit||"")}</span></div>`).join("")}</div>`
       :`<p style="font-size:12px;color:var(--txt-faint);margin:0 0 14px">No quantitative fields yet. Add some under Customize template.</p>`}
     <button class="btn primary full" onclick="saveReport('${opId}','${rid||""}')">${r?"SAVE REPORT":"▸ FILE REPORT"}</button>
     <button class="btn ghost full" style="margin-top:10px" onclick="openTemplate('${opId}')">⚙ CUSTOMIZE TEMPLATE</button>`);
@@ -1034,36 +1050,53 @@ function openReportForm(opId,rid){
 function saveReport(opId,rid){
   const o=getOp(opId),c=rcfg(o),r=rid?(o.reports||[]).find(x=>x.id===rid):null,fq=r?r.freq:c.freq;
   const period=val("rp_n");if(!period){toast("Enter the "+FREQS[fq].unit.toLowerCase()+" number");return;}
+  const date=val("rp_d");if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){toast("Pick a date");return;}
   const values={};c.fields.forEach(f=>{const v=val("rf_"+f.id);if(v!==""&&!isNaN(parseFloat(v)))values[f.id]=parseFloat(v);});
   const text=val("rp_t");
   if(!text&&!Object.keys(values).length){toast("Write a summary or enter a value");return;}
   o.reports=o.reports||[];
-  if(r){Object.assign(r,{period,text,values});}
-  else{o.reports.push({id:uid(),ts:new Date().toISOString(),freq:fq,period,text,values});
+  const oldVals=r?{...(r.values||{})}:{},oldDate=r?rdateStr(r):null;let t=r;
+  if(r){Object.assign(r,{period,text,values,date});}
+  else{t={id:uid(),ts:new Date().toISOString(),freq:fq,period,date,text,values};o.reports.push(t);
     logSys(o,"report",{text:FREQS[fq].unit+" "+period+" "+FREQS[fq].label.toLowerCase()+" report filed"});}
+  c.fields.forEach(f=>{if(!r||oldDate!==date||oldVals[f.id]!==values[f.id])syncField(o,t,f);});
   save();closeModal();toast(r?"Report updated":"Report filed");render();
 }
 function delReport(opId,rid){
   if(!confirm("Delete this report?"))return;
-  const o=getOp(opId);o.reports=(o.reports||[]).filter(x=>x.id!==rid);save();toast("Report deleted");render();
+  const o=getOp(opId);o.reports=(o.reports||[]).filter(x=>x.id!==rid);
+  (o.graphs||[]).forEach(g=>{g.points=(g.points||[]).filter(p=>!(p.src&&p.src.r===rid));});save();toast("Report deleted");render();
 }
 let tplDraft=null;
 function openTemplate(opId){const o=getOp(opId),c=rcfg(o);tplDraft={opId,freq:c.freq,fields:c.fields.map(f=>({...f}))};drawTemplate();}
-function syncTpl(){tplDraft.fields.forEach(f=>{const n=document.getElementById("tf_n_"+f.id),u=document.getElementById("tf_u_"+f.id);if(n)f.name=n.value;if(u)f.unit=u.value;});}
+function syncTpl(){tplDraft.fields.forEach(f=>{const n=document.getElementById("tf_n_"+f.id),u=document.getElementById("tf_u_"+f.id);if(n)f.name=n.value;if(u)f.unit=u.value;const g=document.getElementById("tf_g_"+f.id);if(g)f.graphId=g.value||null;});}
 function drawTemplate(){
   const o=getOp(tplDraft.opId);
   modal(`<div class="grab"></div><h2>Report Template</h2><div class="sub">${esc(o.name)} · unique to this operation</div>
     <div class="field"><label>Frequency</label><div class="chips">${Object.keys(FREQS).map(k=>`<button class="chip ${tplDraft.freq===k?"sel":""}" style="color:var(--cyan)" onclick="syncTpl();tplDraft.freq='${k}';drawTemplate()">${FREQS[k].label}</button>`).join("")}</div></div>
     <div class="field"><label>Quantitative fields <span class="opt">(numbers totaled across reports)</span></label>
-      ${tplDraft.fields.map(f=>`<div style="display:flex;gap:8px;margin-bottom:8px"><input id="tf_n_${f.id}" value="${esc(f.name)}" placeholder="Name, e.g. Revenue" style="flex:1;min-width:0"><input id="tf_u_${f.id}" value="${esc(f.unit||"")}" placeholder="Unit" style="width:84px"><button class="btn sm ghost danger" onclick="syncTpl();tplDraft.fields=tplDraft.fields.filter(x=>x.id!=='${f.id}');drawTemplate()">✕</button></div>`).join("")}
+      ${tplDraft.fields.map(f=>`<div style="margin-bottom:12px;padding:10px;border:1px solid var(--grid);border-radius:10px">
+        <div style="display:flex;gap:8px;margin-bottom:8px"><input id="tf_n_${f.id}" value="${esc(f.name)}" placeholder="Name, e.g. Revenue" style="flex:1;min-width:0"><input id="tf_u_${f.id}" value="${esc(f.unit||"")}" placeholder="Unit" style="width:84px"><button class="btn sm ghost danger" onclick="syncTpl();tplDraft.fields=tplDraft.fields.filter(x=>x.id!=='${f.id}');drawTemplate()">✕</button></div>
+        <select id="tf_g_${f.id}" style="width:100%"><option value="">⛓ Link to graph (optional)</option>
+          ${(o.graphs||[]).filter(g=>g.xMode==="time").map(g=>`<option value="${g.id}" ${f.graphId===g.id?"selected":""}>⛓ Linked: ${esc(g.name)}</option>`).join("")}
+          <option value="__new__" ${f.graphId==="__new__"?"selected":""}>⛓ + New graph for this field</option></select></div>`).join("")}
       <button class="btn sm ghost" onclick="syncTpl();tplDraft.fields.push({id:uid(),name:'',unit:''});drawTemplate();document.getElementById('tf_n_'+tplDraft.fields[tplDraft.fields.length-1].id).focus()">+ ADD FIELD</button>
-      <p style="font-size:11.5px;color:var(--txt-faint);line-height:1.5;margin:10px 0 0">Removing a field hides its past values from reports and totals.</p></div>
+      <p style="font-size:11.5px;color:var(--txt-faint);line-height:1.5;margin:10px 0 0">Linking a field feeds its report values into a time graph at each report's date, and also adds its existing report values. Removing a field hides its past values from reports and totals.</p></div>
     <button class="btn primary full" onclick="saveTemplate()">SAVE TEMPLATE</button>`);
 }
 function saveTemplate(){
-  syncTpl();const o=getOp(tplDraft.opId);
-  o.reportCfg={freq:tplDraft.freq,fields:tplDraft.fields.filter(f=>f.name.trim()).map(f=>({id:f.id,name:f.name.trim(),unit:(f.unit||"").trim()}))};
-  save();closeModal();toast("Template saved");render();
+  syncTpl();const o=getOp(tplDraft.opId),old=rcfg(o).fields;o.graphs=o.graphs||[];
+  const fields=tplDraft.fields.filter(f=>f.name.trim()).map(f=>{
+    let gid=f.graphId||null;const nm=f.name.trim(),un=(f.unit||"").trim();
+    if(gid==="__new__"){const g={id:uid(),name:nm,xMode:"time",xLabel:"Time",yLabel:nm+(un?" ("+un+")":""),color:GRAPH_COLORS[o.graphs.length%GRAPH_COLORS.length],yMode:"single",createdAt:new Date().toISOString(),points:[]};
+      o.graphs.push(g);logSys(o,"graph-add",{text:nm+" · time axis · fed by report field"});gid=g.id;}
+    return{id:f.id,name:nm,unit:un,graphId:gid};});
+  old.forEach(of=>{const nf=fields.find(x=>x.id===of.id);   /* unlinked: its points stay in the graph as normal points */
+    if(of.graphId&&(!nf||nf.graphId!==of.graphId)){const g=o.graphs.find(x=>x.id===of.graphId);if(g)(g.points||[]).forEach(p=>{if(p.src&&p.src.f===of.id)delete p.src;});}});
+  o.reportCfg={freq:tplDraft.freq,fields};
+  let added=0;
+  fields.forEach(f=>{const of=old.find(x=>x.id===f.id);if(f.graphId&&(!of||of.graphId!==f.graphId))(o.reports||[]).forEach(r=>{if(syncField(o,r,f))added++;});});
+  save();closeModal();toast(added?"Template saved · "+added+" past value"+(added===1?"":"s")+" added to graphs":"Template saved");render();
 }
 
 /* ---- OMC timeline ---- */

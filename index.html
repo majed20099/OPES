@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#070a10">
 <script>try{if(localStorage.getItem("omc_motion")==="off")document.documentElement.classList.add("nomotion")}catch(e){}</script>
-<title>OPES</title>
+<title>OMC — Operations Command</title>
 <style>
 :root{
   --base:#070a10; --panel:#0e141d; --panel-2:#121a26; --panel-3:#16202e;
@@ -400,8 +400,8 @@ html.nomotion .apcard.emg::after{animation:none}
   <div class="sp-grid"></div><div class="sp-scan"></div>
   <div class="sp-core">
     <svg class="sp-glyph" viewBox="0 0 80 80"><rect class="sp-box" x="6" y="6" width="68" height="68" rx="16" pathLength="1"/><path class="sp-dia" d="M40 22 L58 40 L40 58 L22 40 Z" pathLength="1"/></svg>
-    <div class="sp-title">OPES</div>
-    <div class="sp-sub">OMC · v1.2 BETA</div>
+    <div class="sp-title">OPERATIONS COMMAND</div>
+    <div class="sp-sub">OMC · v1.2 BETA 5</div>
     <div class="sp-bar"><i></i></div>
     <div class="sp-log"><span>LOADING DATA</span><span>SYNCING PROTOCOLS</span><span>SYSTEM NOMINAL</span></div>
   </div>
@@ -1718,6 +1718,7 @@ function openBackup(){
     <div class="field"><label>Animations <span class="opt">(v1.2 beta)</span></label><div class="chips">
       <button class="chip ${motionOn()?"sel":""}" style="color:var(--cyan)" onclick="setMotion(true)">On</button>
       <button class="chip ${!motionOn()?"sel":""}" style="color:var(--cyan)" onclick="setMotion(false)">Off</button></div></div>
+    <button class="btn full ghost" style="margin-bottom:10px;color:var(--cyan)" onclick="openSync()">⇄ CLOUD SYNC</button>
     <button class="btn primary full" onclick="exportData()">⭳ EXPORT BACKUP FILE</button>
     <div class="field" style="margin-top:16px"><label>Restore from backup</label>
       <input id="importfile" type="file" accept="application/json" onchange="importData(event)"></div>
@@ -1788,6 +1789,91 @@ function glowRGB(c){c=String(c||"").trim();const m=c.match(/^var\((--[\w-]+)\)$/
 function protoGlow(color){
   if(!motionOn())return;const el=document.getElementById("edgeglow");if(!el)return;
   el.style.setProperty("--g",glowRGB(color));el.classList.remove("go");void el.offsetWidth;el.classList.add("go");}
+
+/* ===================== SYNC (v1.2 beta5) — phone <-> desktop via a private GitHub repo ===================== */
+const SYNC_KEY="omc_sync_v1";
+function syncCfg(){try{return JSON.parse(localStorage.getItem(SYNC_KEY))||{};}catch(e){return{};}}
+function syncSet(c){try{localStorage.setItem(SYNC_KEY,JSON.stringify(c));}catch(e){}}
+function normDB(d){d.operations=d.operations||[];d.protocols=d.protocols||[];d.protocolSets=d.protocolSets||[];return d;}
+function dbHash(o){const s=JSON.stringify(o);let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return h+":"+s.length;}
+function b64enc(s){const b=new TextEncoder().encode(s);let r="";for(let i=0;i<b.length;i+=8192)r+=String.fromCharCode.apply(null,b.subarray(i,i+8192));return btoa(r);}
+function b64dec(s){const r=atob(s.replace(/\s/g,""));const b=new Uint8Array(r.length);for(let i=0;i<r.length;i++)b[i]=r.charCodeAt(i);return new TextDecoder().decode(b);}
+function ghUrl(c){return "https://api.github.com/repos/"+c.repo+"/contents/"+c.path;}
+function ghHead(c,acc){return{Authorization:"Bearer "+c.token,Accept:acc||"application/vnd.github+json"};}
+async function ghFile(c){
+  const r=await fetch(ghUrl(c)+"?t="+Date.now(),{headers:ghHead(c),cache:"no-store"});
+  if(r.status===404)return null;
+  if(!r.ok)throw new Error(r.status===401?"Token rejected":r.status===403?"Token has no access to that repo":"GitHub error "+r.status);
+  const j=await r.json();let text;
+  if(j.content&&j.encoding==="base64")text=b64dec(j.content);
+  else{const r2=await fetch(ghUrl(c),{headers:ghHead(c,"application/vnd.github.raw+json"),cache:"no-store"});text=await r2.text();}
+  return{sha:j.sha,text};
+}
+async function ghPut(c,sha){
+  const body={message:"OMC sync "+new Date().toISOString(),content:b64enc(JSON.stringify(DB,null,1))};
+  if(sha)body.sha=sha;
+  const r=await fetch(ghUrl(c),{method:"PUT",headers:{...ghHead(c),"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!r.ok)throw new Error(r.status===409||r.status===422?"Cloud copy changed, tap Sync again":"Push failed ("+r.status+")");
+}
+function syncDone(c,base,msg){c.base=base;c.at=Date.now();syncSet(c);toast(msg);}
+let syncBusy=false,syncPending=null;
+async function syncNow(){
+  const c=syncCfg();if(!c.token||!c.repo){toast("Set up sync first");return;}
+  if(syncBusy)return;syncBusy=true;toast("Syncing…");
+  try{
+    const f=await ghFile(c),lh=dbHash(DB);
+    if(!f){await ghPut(c,null);syncDone(c,lh,"Uploaded to cloud");if(document.getElementById("sy_status"))openSync();return;}
+    let rd;try{rd=normDB(JSON.parse(f.text));if(!Array.isArray(rd.operations))throw 0;}catch(e){throw new Error("Cloud file isn't OMC data");}
+    const rh=dbHash(rd);
+    if(rh===lh)syncDone(c,lh,"Already in sync");
+    else if(c.base&&rh===c.base){await ghPut(c,f.sha);syncDone(c,lh,"Pushed to cloud");}
+    else if(c.base&&lh===c.base){syncTake(c,f,rd);return;}
+    else{syncPending={c,f,rd};syncConflict();return;}
+    if(document.getElementById("sy_status"))openSync();
+  }catch(e){toast(e.message||"Sync failed");}
+  finally{syncBusy=false;}
+}
+function syncTake(c,f,rd){
+  try{Store.set("omc_db_prev",JSON.stringify(DB));}catch(e){}
+  DB=rd;save();syncDone(c,dbHash(DB),"Pulled from cloud");closeModal();go("dashboard");syncBusy=false;
+}
+function syncConflict(){
+  const p=syncPending;
+  modal(`<div class="grab"></div><h2>Sync Conflict</h2><div class="sub">Both copies changed</div>
+    <p style="font-size:13px;color:var(--txt-dim);line-height:1.55;margin-bottom:16px">This device and the cloud both have changes the other lacks. Pick the one to keep — the other is replaced. (A replaced local copy is stashed on this device first.)</p>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--txt-faint);line-height:1.7;margin-bottom:16px">This device: ${DB.operations.length} ops · ${DB.protocols.length} protocols<br>Cloud: ${p.rd.operations.length} ops · ${p.rd.protocols.length} protocols</div>
+    <button class="btn primary full" onclick="syncResolve('local')">KEEP THIS DEVICE</button>
+    <button class="btn full ghost" style="margin-top:10px" onclick="syncResolve('cloud')">KEEP CLOUD</button>
+    <button class="btn full ghost" style="margin-top:10px" onclick="syncPending=null;syncBusy=false;closeModal()">CANCEL</button>`);
+}
+async function syncResolve(w){
+  const p=syncPending;if(!p)return;syncPending=null;
+  try{
+    if(w==="cloud"){syncTake(p.c,p.f,p.rd);return;}
+    await ghPut(p.c,p.f.sha);syncDone(p.c,dbHash(DB),"Cloud replaced with this device");closeModal();
+  }catch(e){toast(e.message||"Sync failed");}
+  finally{syncBusy=false;}
+}
+function openSync(){
+  const c=syncCfg(),on=!!(c.token&&c.repo);
+  modal(`<div class="grab"></div><h2>Cloud Sync</h2><div class="sub">Phone ⇄ desktop</div>
+    <p id="sy_status" style="font-family:var(--mono);font-size:11px;color:var(--txt-faint);line-height:1.7;margin-bottom:14px">${on?"Connected to "+esc(c.repo)+(c.at?" · last sync "+new Date(c.at).toLocaleString():" · not synced yet"):"Not connected. Create a PRIVATE GitHub repo, then a fine-grained token limited to it with Contents: Read and write."}</p>
+    <div class="field"><label>Repository <span class="opt">(owner/name)</span></label><input id="sy_repo" value="${esc(c.repo||"")}" placeholder="yourname/omc-data" autocapitalize="off" autocorrect="off"></div>
+    <div class="field"><label>Access token <span class="opt">${c.token?"(saved — leave blank to keep)":""}</span></label><input id="sy_tok" type="password" placeholder="github_pat_…" autocomplete="off"></div>
+    <div class="field"><label>File name</label><input id="sy_path" value="${esc(c.path||"omc-data.json")}" autocapitalize="off"></div>
+    <button class="btn full ${on?"ghost":"primary"}" onclick="syncSave()">SAVE CONNECTION</button>
+    ${on?`<button class="btn primary full" style="margin-top:10px" onclick="syncNow()">⇄ SYNC NOW</button>
+    <button class="btn full ghost" style="margin-top:10px" onclick="syncOff()">DISCONNECT THIS DEVICE</button>`:""}
+    <p style="font-family:var(--mono);font-size:10px;color:var(--txt-faint);line-height:1.6;margin-top:12px">The token is kept on this device only. Enter it once per device. Sync manually — tap SYNC NOW after changes on one device, and before editing on the other.</p>`);
+}
+function syncSave(){
+  const old=syncCfg(),repo=val("sy_repo").trim().replace(/^https?:\/\/github\.com\//,"").replace(/\.git$/,"").replace(/\/$/,""),tok=val("sy_tok").trim()||old.token||"",path=(val("sy_path").trim()||"omc-data.json").replace(/^\/+/,"");
+  if(!/^[\w.-]+\/[\w.-]+$/.test(repo)){toast("Use owner/name");return;}
+  if(!tok){toast("Token required");return;}
+  const changed=repo!==old.repo||path!==old.path;
+  syncSet({token:tok,repo,path,base:changed?null:old.base,at:changed?null:old.at});toast("Connection saved");openSync();
+}
+function syncOff(){try{localStorage.removeItem(SYNC_KEY);}catch(e){}toast("Disconnected");openSync();}
 
 load();
 render();
